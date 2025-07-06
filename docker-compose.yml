@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  # Sui Local Network
+  sui-node:
+    image: mysten/sui-tools:testnet
+    container_name: sui-ai-sdk-node
+    ports:
+      - "9000:9000"
+      - "9184:9184"
+    command: sui start --with-faucet
+    volumes:
+      - sui-data:/root/.sui
+    networks:
+      - sui-ai-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: sui-ai-sdk-db
+    environment:
+      POSTGRES_DB: sui_ai_sdk
+      POSTGRES_USER: sui_ai
+      POSTGRES_PASSWORD: sui_ai_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - sui-ai-network
+
+  # Redis for Caching
+  redis:
+    image: redis:7-alpine
+    container_name: sui-ai-sdk-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - sui-ai-network
+
+  # IPFS Node
+  ipfs:
+    image: ipfs/go-ipfs:latest
+    container_name: sui-ai-sdk-ipfs
+    ports:
+      - "4001:4001"
+      - "5001:5001"
+      - "8080:8080"
+    volumes:
+      - ipfs-data:/data/ipfs
+    networks:
+      - sui-ai-network
+
+  # AI Model Server
+  ai-server:
+    build:
+      context: ./services/ai-server
+      dockerfile: Dockerfile
+    container_name: sui-ai-sdk-ai-server
+    ports:
+      - "8001:8001"
+    environment:
+      - MODEL_CACHE_SIZE=2GB
+      - MAX_BATCH_SIZE=32
+      - DEVICE=cpu
+    volumes:
+      - ./models:/app/models
+    depends_on:
+      - redis
+    networks:
+      - sui-ai-network
+
+  # Oracle Service
+  oracle:
+    build:
+      context: ./services/oracle
+      dockerfile: Dockerfile
+    container_name: sui-ai-sdk-oracle
+    environment:
+      - SUI_RPC_URL=http://sui-node:9000
+      - ORACLE_PRIVATE_KEY=${ORACLE_PRIVATE_KEY}
+      - UPDATE_INTERVAL=30
+    depends_on:
+      - sui-node
+      - postgres
+    networks:
+      - sui-ai-network
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: sui-ai-sdk-api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://sui_ai:sui_ai_password@postgres:5432/sui_ai_sdk
+      - REDIS_URL=redis://redis:6379
+      - SUI_RPC_URL=http://sui-node:9000
+    depends_on:
+      - postgres
+      - redis
+      - sui-node
+    networks:
+      - sui-ai-network
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sui-ai-sdk-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - sui-ai-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sui-ai-sdk-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - sui-ai-network
+
+volumes:
+  sui-data:
+  postgres-data:
+  redis-data:
+  ipfs-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  sui-ai-network:
+    driver: bridge
