@@ -1,0 +1,191 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '18'
+  SUI_VERSION: 'testnet'
+
+jobs:
+  test-move-contracts:
+    runs-on: ubuntu-latest
+    name: Test Move Contracts
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Sui CLI
+      run: |
+        curl -fLJO https://github.com/MystenLabs/sui/releases/download/testnet-v1.14.0/sui-testnet-v1.14.0-ubuntu-x86_64.tgz
+        tar -xzf sui-testnet-v1.14.0-ubuntu-x86_64.tgz
+        sudo mv sui-testnet-v1.14.0-ubuntu-x86_64/sui /usr/local/bin/
+        sudo chmod +x /usr/local/bin/sui
+    
+    - name: Test Move Contracts
+      run: |
+        cd move
+        sui move test
+    
+    - name: Build Move Contracts
+      run: |
+        cd move
+        sui move build
+
+  test-typescript-sdk:
+    runs-on: ubuntu-latest
+    name: Test TypeScript SDK
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: sdk/package-lock.json
+    
+    - name: Install Dependencies
+      run: |
+        cd sdk
+        npm ci
+    
+    - name: Run Linting
+      run: |
+        cd sdk
+        npm run lint
+    
+    - name: Run Tests
+      run: |
+        cd sdk
+        npm test
+    
+    - name: Build SDK
+      run: |
+        cd sdk
+        npm run build
+    
+    - name: Upload Coverage
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./sdk/coverage/lcov.info
+
+  test-cli-tools:
+    runs-on: ubuntu-latest
+    name: Test CLI Tools
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: tools/cli/package-lock.json
+    
+    - name: Install Dependencies
+      run: |
+        cd tools/cli
+        npm ci
+    
+    - name: Build CLI
+      run: |
+        cd tools/cli
+        npm run build
+    
+    - name: Test CLI
+      run: |
+        cd tools/cli
+        npm test
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    name: Integration Tests
+    needs: [test-move-contracts, test-typescript-sdk]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    
+    - name: Install Sui CLI
+      run: |
+        curl -fLJO https://github.com/MystenLabs/sui/releases/download/testnet-v1.14.0/sui-testnet-v1.14.0-ubuntu-x86_64.tgz
+        tar -xzf sui-testnet-v1.14.0-ubuntu-x86_64.tgz
+        sudo mv sui-testnet-v1.14.0-ubuntu-x86_64/sui /usr/local/bin/
+    
+    - name: Start Local Sui Network
+      run: |
+        sui start --with-faucet &
+        sleep 10
+    
+    - name: Run Integration Tests
+      run: |
+        cd examples
+        npm install
+        npm test
+
+  publish-npm:
+    runs-on: ubuntu-latest
+    name: Publish to NPM
+    needs: [test-move-contracts, test-typescript-sdk, test-cli-tools]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        registry-url: 'https://registry.npmjs.org'
+    
+    - name: Install Dependencies
+      run: |
+        cd sdk
+        npm ci
+    
+    - name: Build Package
+      run: |
+        cd sdk
+        npm run build
+    
+    - name: Publish to NPM
+      run: |
+        cd sdk
+        npm publish --access public
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  deploy-docs:
+    runs-on: ubuntu-latest
+    name: Deploy Documentation
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    
+    - name: Build Documentation
+      run: |
+        cd docs
+        npm install
+        npm run build
+    
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./docs/dist
